@@ -1,0 +1,6 @@
+FROM alpine
+RUN (cd /usr/local/bin ; wget "https://github.com/mingrammer/flog/releases/download/v0.3.1/flog_0.3.1_linux_amd64.tar.gz" -q -O- | tar zxf - flog) \
+  && mkdir /logs
+COPY Dockerfiles/fake_logger_files/* /
+
+CMD [ "/start.sh" ]

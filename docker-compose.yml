@@ -1,0 +1,192 @@
+version: "2.1"
+
+networks:
+  splunk.net:
+    driver: bridge
+
+volumes:
+  fakelogger-volume:
+
+services:
+  fakelogger:
+    build:
+      context: .
+      dockerfile: Dockerfiles/fake_logger
+    image: "flogger"
+    stdin_open: true
+    tty: true
+    environment:
+      NUMBER_OF_LOG_LINES: 300
+    volumes:
+      - fakelogger-volume:/logs
+    networks:
+      splunk.net:
+        aliases:
+          - fakelogger.splunk.net
+
+  splunkenterprise:
+    image: splunk/splunk:${splunk_version}
+    hostname: "splunkenterprise"
+    stdin_open: true
+    tty: true
+    environment:
+      SPLUNK_START_ARGS: "--accept-license"
+      # Splunk <= 7.0.3
+      SPLUNK_ENABLE_LISTEN: "9997" # Not needed for Splunk >= 7.2.0
+      SPLUNK_ADD_1: "index apache_error"
+      SPLUNK_ADD_2: "index rfc3164"
+      SPLUNK_ADD_3: "index rfc5424"
+      SPLUNK_ADD_4: "index alternative_index"
+      # Splunk >= 7.2.0
+      SPLUNK_PASSWORD: changeme
+      SPLUNK_LICENSE_URI: /var/opt/splunk/etc/splunk-enttrial.lic
+      # Remove/Comment this SPLUNK_ADD when using container <= 7.0.3 !!
+      SPLUNK_ADD: >-
+        index apache_error,
+        index rfc3164,
+        index rfc5424,
+        index alternative_index
+      # DEBUG: "true"
+    ports:
+      - "8000:8000"
+      - "8089:8089"
+    networks:
+      - splunk.net
+    volumes:
+      - ./config/splunkenterprise/apps/custom_config:/opt/splunk/etc/apps/custom_config
+      - ./config/splunkenterprise/system/local/props.conf:/opt/splunk/etc/system/local/props.conf
+
+  splunkheavyforwarder:
+    depends_on:
+      - splunkenterprise
+    image: splunk/splunk:${splunk_version}
+    hostname: "heavyforwarder"
+    stdin_open: true
+    tty: true
+    environment:
+      SPLUNK_START_ARGS: "--accept-license"
+      # Splunk <= 7.0.3
+      SPLUNK_ENABLE_LISTEN: "9997"
+      SPLUNK_FORWARD_SERVER: "splunkenterprise:9997"
+      # Splunk >= 7.2.0
+      SPLUNK_PASSWORD: changeme
+      SPLUNK_STANDALONE_URL: splunkenterprise
+      SPLUNK_ROLE: splunk_heavy_forwarder
+    ports:
+      - "8001:8000"
+    networks:
+      - splunk.net
+    volumes:
+      - ./config/splunkheavyforwarder/apps/custom_config:/opt/splunk/etc/apps/custom_config
+      - ./config/splunkheavyforwarder/system/local/props.conf:/opt/splunk/etc/system/local/props.conf
+
+  splunkintermediateforwarder:
+    # universalforwarder
+    depends_on:
+      - splunkenterprise
+    image: splunk/universalforwarder:${splunk_universalforwarder_version}
+    hostname: "intermediateforwarder"
+    stdin_open: true
+    tty: true
+    networks:
+      - splunk.net
+    environment:
+      SPLUNK_START_ARGS: "--accept-license"
+      # Splunk <= 7.0.3
+      SPLUNK_FORWARD_SERVER: "splunkenterprise:9997"
+      SPLUNK_CMD_1: "enable listen 9997 -auth admin:changeme"
+      # Splunk >= 7.2.0
+      SPLUNK_PASSWORD: changeme
+      SPLUNK_STANDALONE_URL: splunkenterprise
+
+    volumes:
+      # Splunk UF <= 7.0.3, SPLUNK_HOME --> /opt/splunk
+      - ./config/splunkintermediateforwarder/apps/custom_config:/opt/splunk/etc/apps/custom_config
+      # Splunk UF >= 7.2.0, SPLUNK_HOME --> /opt/splunkforwarder
+      - ./config/splunkintermediateforwarder/apps/custom_config:/opt/splunkforwarder/etc/apps/custom_config
+
+  splunkforwarder1:
+    depends_on:
+      - splunkintermediateforwarder
+      - fakelogger
+    hostname: "forwarder1"
+    image: "splunk/universalforwarder:${splunk_universalforwarder_version}"
+    stdin_open: true
+    tty: true
+    networks:
+      - splunk.net
+    environment:
+      SPLUNK_START_ARGS: "--accept-license"
+      # Splunk <= 7.0.3
+      SPLUNK_FORWARD_SERVER: "splunkintermediateforwarder:9997"
+      SPLUNK_ADD_1: "monitor /logs/apache_common_fwd1.log"
+      SPLUNK_ADD_2: "monitor /logs/apache_error_fwd1.log -index apache_error"
+      SPLUNK_ADD_3: "monitor /logs/rfc3164_fwd1.log -index rfc3164 -sourcetype rfc3164"
+      SPLUNK_ADD_4: "monitor /logs/rfc5424_fwd1.log -index rfc5424 -sourcetype rfc5424"
+      SPLUNK_ADD_5: "monitor /logs/csv_classic_fwd1.csv" # will default to sourcetype csv
+      SPLUNK_ADD_6: "monitor /logs/csv_noheader_fwd1.csv" # will default to sourcetype csv
+      SPLUNK_ADD_7: "monitor /logs/csv_classic_fwd1.log" # will NOT default to sourcetype csv
+      SPLUNK_ADD_8: "monitor /logs/csv_noheader_fwd1.log" # will NOT default to sourcetype csv
+      # Splunk >= 7.2.0
+      SPLUNK_PASSWORD: changeme
+      SPLUNK_STANDALONE_URL: splunkintermediateforwarder
+      # Remove/Comment this SPLUNK_ADD when using container <= 7.0.3 !!
+      SPLUNK_ADD: >
+        monitor /logs/apache_common_fwd1.log,
+        monitor /logs/apache_error_fwd1.log -index apache_error,
+        monitor /logs/rfc3164_fwd1.log -index rfc3164 -sourcetype rfc3164,
+        monitor /logs/rfc5424_fwd1.log -index rfc5424 -sourcetype rfc5424,
+        monitor /logs/csv_classic_fwd1.csv,
+        monitor /logs/csv_noheader_fwd1.csv,
+        monitor /logs/csv_classic_fwd1.log,
+        monitor /logs/csv_noheader_fwd1.log
+    volumes:
+      - fakelogger-volume:/logs
+      # Splunk UF <= 7.0.3, SPLUNK_HOME --> /opt/splunk
+      - ./config/splunkforwarder1/apps/custom_config:/opt/splunk/etc/apps/custom_config
+      # Splunk UF >= 7.2.0, SPLUNK_HOME --> /opt/splunkforwarder
+      - ./config/splunkforwarder1/apps/custom_config:/opt/splunkforwarder/etc/apps/custom_config
+
+  splunkforwarder2:
+    depends_on:
+      - splunkheavyforwarder
+      - fakelogger
+    hostname: "forwarder2"
+    image: "splunk/universalforwarder:${splunk_universalforwarder_version}"
+    stdin_open: true
+    tty: true
+    networks:
+      - splunk.net
+    environment:
+      SPLUNK_START_ARGS: "--accept-license"
+      # Splunk <= 7.0.3
+      SPLUNK_FORWARD_SERVER: "splunkheavyforwarder:9997"
+      SPLUNK_ADD_1: "monitor /logs/apache_combined_fwd2.log"
+      SPLUNK_ADD_2: "monitor /logs/apache_error_fwd2.log -index apache_error"
+      SPLUNK_ADD_3: "monitor /logs/rfc3164_fwd2.log -index rfc3164 -sourcetype rfc3164"
+      SPLUNK_ADD_4: "monitor /logs/rfc5424_fwd2.log -index rfc5424 -sourcetype rfc5424"
+      SPLUNK_ADD_5: "monitor /logs/csv_classic_fwd2.csv -sourcetype csv_classic"
+      SPLUNK_ADD_6: "monitor /logs/csv_noheader_fwd2.csv -sourcetype csv_noheader"
+      SPLUNK_ADD_7: "monitor /logs/csv_classic_fwd2.log -sourcetype csv_classic"
+      SPLUNK_ADD_8: "monitor /logs/csv_noheader_fwd2.log -sourcetype csv_noheader"
+      # Splunk >= 7.2.0
+      SPLUNK_PASSWORD: changeme
+      SPLUNK_STANDALONE_URL: splunkheavyforwarder
+      # Remove/Comment this SPLUNK_ADD when using container <= 7.0.3 !!
+      SPLUNK_ADD: >-
+        monitor /logs/apache_combined_fwd2.log,
+        monitor /logs/apache_error_fwd2.log -index apache_error,
+        monitor /logs/rfc3164_fwd2.log -index rfc3164 -sourcetype rfc3164,
+        monitor /logs/rfc5424_fwd2.log -index rfc5424 -sourcetype rfc5424,
+        monitor /logs/csv_classic_fwd2.csv -sourcetype csv_classic,
+        monitor /logs/csv_noheader_fwd2.csv -sourcetype csv_noheader,
+        monitor /logs/csv_classic_fwd2.log -sourcetype csv_classic,
+        monitor /logs/csv_noheader_fwd2.log -sourcetype csv_noheader
+    volumes:
+      - fakelogger-volume:/logs
+      # Splunk UF <= 7.0.3, SPLUNK_HOME --> /opt/splunk
+      - ./config/splunkforwarder2/apps/custom_config:/opt/splunk/etc/apps/custom_config
+      - ./config/splunkforwarder2/system/local/props.conf:/opt/splunk/etc/system/local/props.conf
+      # Splunk UF >= 7.2.0, SPLUNK_HOME --> /opt/splunkforwarder
+      - ./config/splunkforwarder2/apps/custom_config:/opt/splunkforwarder/etc/apps/custom_config
+      - ./config/splunkforwarder2/system/local/props.conf:/opt/splunkforwarder/etc/system/local/props.conf

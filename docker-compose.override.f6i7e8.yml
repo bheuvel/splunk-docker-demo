@@ -1,0 +1,21 @@
+version: "2.1"
+
+services:
+  splunkenterprise:
+    image: splunk/splunk:8.0.0
+
+  splunkheavyforwarder:
+    image: splunk/splunk:7.3.2
+
+  splunkintermediateforwarder:
+    image: splunk/universalforwarder:7.3.2
+
+  splunkforwarder1:
+    image: splunk/universalforwarder:6.6.3
+    environment:
+      SPLUNK_ADD:
+
+  splunkforwarder2:
+    image: splunk/universalforwarder:6.6.3
+    environment:
+      SPLUNK_ADD:
